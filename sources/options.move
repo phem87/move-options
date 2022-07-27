@@ -4,12 +4,15 @@ module Options::options {
     use std::signer::{address_of};
     use aptos_framework::coin::{Self, Coin};
     use aptos_framework::table::{Self, Table};
+    use std::vector::{Self};
 
     const USDC_DECIMALS: u64 = 6;
 
     const ENOT_ADMIN: u64 = 1000;
 
-    const EOPTION_NOT_FOUND: u64 = 2000;
+    const EUSER_STORE_EXISTS: u64 = 2000;
+
+    const EOPTION_NOT_FOUND: u64 = 3000;
 
     struct OptionsContractStore<phantom CoinType> has key {
         options: Table<OptionId<CoinType>, OptionsContract<CoinType>>,
@@ -28,27 +31,46 @@ module Options::options {
         call: bool
     }
 
-    // each user has one of these per asset type (eg btc, eth)
-    // struct UserOptionsStore<phantom T> has key {
-    //     longs: Table<u64, Long>,
-    //     short: Table<u64, Long>
-    // }
+    // each user has one of these per underlying asset type (eg btc, eth, usdc)
+    struct UserOptionsStore<phantom T> has key {
+        longs: vector<Long<T>>,
+        shorts: vector<Short<T>>
+    }
 
-    // struct Long<T> has store {
-    //     id: <some way to reference the original contract>,
-    //     size: <some way to indicate size of position>
-    // }
+    struct Long<phantom T> has store {
+        id: OptionId<T>,
+        // number of options
+        quantity: u64,
+    }
 
-    // struct Short<T> has store {
-    //     id: <some way to reference the original contract>,
-    //     size: <some way to indicate size of position>
-    // }
+    struct Short<phantom T> has store {
+        id: OptionId<T>,
+        // number of options
+        quantity: u64,
+    }
+
+    // public entry fun merge
 
     struct OptionsContract<phantom T> has store {
         id: OptionId<T>, // TODO: maybe dont need this
         collateral: Option<Coin<T>>,
         // Value per contract at expiry, denominated in native collateral quantity
         value: Option<u64>,
+    }
+
+    public entry fun init_user_store<T>(user: &signer) {
+        assert!(!exists<UserOptionsStore<T>>(address_of(user)), EUSER_STORE_EXISTS);
+        let store = UserOptionsStore<T> {
+            longs: vector::empty<Long<T>>(),
+            shorts: vector::empty<Short<T>>()
+        };
+        move_to(user, store);
+    }
+
+    fun add_to_user_store<T>(user: &signer, long: Long<T>, short: Short<T>) acquires UserOptionsStore {
+        let store = borrow_global_mut<UserOptionsStore<T>>(address_of(user));
+        vector::push_back(&mut store.longs, long);
+        vector::push_back(&mut store.shorts, short);
     }
 
     public entry fun create_contract<CoinType>(
@@ -86,17 +108,29 @@ module Options::options {
         }
     }
 
-    public entry fun mint<C>(contract: &mut OptionsContract<C>, collateral: Coin<C>) {
-        let _num_tokens = aptos_framework::coin::value<C>(&collateral) / contract.id.size;
+    public entry fun mint<C>(
+        contract: &mut OptionsContract<C>,
+        collateral: Coin<C>
+    ): (Long<C>, Short<C>) {
+        // TODO: assert
+        let num_tokens = aptos_framework::coin::value<C>(&collateral) / contract.id.size;
         if (option::is_none(&contract.collateral)) {
             option::fill(&mut contract.collateral, collateral);
         } else {
             let coins = option::borrow_mut(&mut contract.collateral);
             coin::merge(coins, collateral);
-        }
+        };
         // merge the coin
         // issue a corresponding long/short tokens
-
+        let long = Long<C> {
+            id: contract.id,
+            quantity: num_tokens,
+        };
+        let short = Short<C> {
+            id: contract.id,
+            quantity: num_tokens,
+        };
+        (long, short)
     }
 
     // public entry fun get_contract<C>(
