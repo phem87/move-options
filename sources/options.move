@@ -2,7 +2,8 @@ module Options::options {
     use std::string::{Self as str, String};
     use std::option::{Self, Option};
     use std::signer::{address_of};
-    use aptos_framework::coin::{Self, Coin};
+    use std::vector::{Self};
+    use aptos_framework::coin::{Coin};
 
     const USDC_DECIMALS: u64 = 6;
 
@@ -61,21 +62,21 @@ module Options::options {
         }
     }
 
-    public entry fun mint<C>(contract: OptionsContract<C>, collateral: Coin<C>) {
-        // let options = &mut borrow_global_mut<OptionsContractStore<C>>(address_of(@Options)).options;
-        // scan for match, then write  if we find one. 
+    // public entry fun mint<C>(contract: OptionsContract<C>, collateral: Coin<C>) {
+    //     // let options = &mut borrow_global_mut<OptionsContractStore<C>>(address_of(@Options)).options;
+    //     // scan for match, then write  if we find one. 
 
-        let num_tokens = aptos_framework::coin::value<C>(&collateral) / contract.size;
-        if (option::is_none(&contract.collateral)) {
-            option::fill(&mut contract.collateral, collateral);
-        } else {
-            let coins = option::borrow_mut(&mut contract.collateral);
-            coin::merge(coins, collateral);
-        }
-        // merge the coin
-        // issue a corresponding long/short tokens
+    //     let num_tokens = aptos_framework::coin::value<C>(&collateral) / contract.size;
+    //     if (option::is_none(&contract.collateral)) {
+    //         option::fill(&mut contract.collateral, collateral);
+    //     } else {
+    //         let coins = option::borrow_mut(&mut contract.collateral);
+    //         coin::merge(coins, collateral);
+    //     }
+    //     // merge the coin
+    //     // issue a corresponding long/short tokens
 
-    }
+    // }
 
     // public entry fun get_contracts<C>(user: address): vector<OptionsContract<C>> acquires OptionsContractStore {
     //     let value = borrow_global<OptionsContractStore<C>>(user).options;
@@ -91,7 +92,16 @@ module Options::options {
         create_contract<ManagedCoin>(admin, str::utf8(b"test"), 1000, 2000, 10000000000000, true);
         create_contract<WrappedBTCCoin>(admin, str::utf8(b"btc"), 1000, 1000, 10000000000000, true);
 
-        // let contracts = get_contracts<ManagedCoin>(address_of(admin));
-        // let options = borrow_global<OptionsContractStore<ManagedCoin>>(address_of(admin)).options;
+        let managed_store = borrow_global<OptionsContractStore<ManagedCoin>>(address_of(admin));
+        assert!(vector::length(&managed_store.options) == 2, 1000);
+
+        // if you do it without the & it's an implicit copy, tries to drop too
+        let btc_store = &borrow_global<OptionsContractStore<WrappedBTCCoin>>(address_of(admin)).options;
+        assert!(vector::length(btc_store) == 1, 1000);
+    }
+
+    #[test(admin = @Options)]
+    fun test_mint(admin: &signer) acquires OptionsContractStore {
+        create_contract<ManagedCoin>(admin, str::utf8(b"test"), 1000, 1000, 10000000000000, true);
     }
 }
