@@ -2,8 +2,8 @@ module Options::options {
     use std::string::{Self as str, String};
     use std::option::{Self, Option};
     use std::signer::{address_of};
-    use std::vector::{Self};
     use aptos_framework::coin::{Self, Coin};
+    use aptos_framework::table::{Self, Table};
 
     const USDC_DECIMALS: u64 = 6;
 
@@ -12,7 +12,7 @@ module Options::options {
     const EOPTION_NOT_FOUND: u64 = 2000;
 
     struct OptionsContractStore<phantom CoinType> has key {
-        options: vector<OptionsContract<CoinType>>,
+        options: Table<OptionId<CoinType>, OptionsContract<CoinType>>,
     }
 
     struct OptionId<phantom T> has copy, drop, store {
@@ -45,7 +45,7 @@ module Options::options {
     // }
 
     struct OptionsContract<phantom T> has store {
-        id: OptionId<T>,
+        id: OptionId<T>, // TODO: maybe dont need this
         collateral: Option<Coin<T>>,
         // Value per contract at expiry, denominated in native collateral quantity
         value: Option<u64>,
@@ -75,17 +75,19 @@ module Options::options {
 
         if (exists<OptionsContractStore<CoinType>>(address_of(creator))) {
             let options = &mut borrow_global_mut<OptionsContractStore<CoinType>>(address_of(creator)).options;
-            std::vector::push_back(options, contract);
+            table::add(options, id, contract);
         } else {
-            let options = OptionsContractStore<CoinType> {
-                options: std::vector::singleton(contract)
+            let options = table::new<OptionId<CoinType>, OptionsContract<CoinType>>();
+            table::add(&mut options, id, contract);
+            let store = OptionsContractStore<CoinType> {
+                options
             };
-            move_to(creator, options);
+            move_to(creator, store);
         }
     }
 
     public entry fun mint<C>(contract: &mut OptionsContract<C>, collateral: Coin<C>) {
-        let num_tokens = aptos_framework::coin::value<C>(&collateral) / contract.id.size;
+        let _num_tokens = aptos_framework::coin::value<C>(&collateral) / contract.id.size;
         if (option::is_none(&contract.collateral)) {
             option::fill(&mut contract.collateral, collateral);
         } else {
@@ -126,22 +128,30 @@ module Options::options {
         create_contract<WrappedBTCCoin>(admin, str::utf8(b"btc"), 1000, 1000, 10000000000000, true);
 
         let managed_store = borrow_global<OptionsContractStore<ManagedCoin>>(address_of(admin));
-        assert!(vector::length(&managed_store.options) == 2, 1000);
+        assert!(table::length<OptionId<ManagedCoin>, OptionsContract<ManagedCoin>>(&managed_store.options) == 2, 1000);
 
         // if you do it without the & it's an implicit copy, tries to drop too
         let btc_store = &borrow_global<OptionsContractStore<WrappedBTCCoin>>(address_of(admin)).options;
-        assert!(vector::length(btc_store) == 1, 1000);
+        assert!(table::length<OptionId<WrappedBTCCoin>, OptionsContract<WrappedBTCCoin>>(btc_store) == 1, 1000);
     }
 
     #[test(admin = @Options)]
     fun test_mint(admin: &signer) acquires OptionsContractStore {
+        let price_feed = str::utf8(b"test");
         let size: u64 = 1000;
         let strike: u64 = 1000;
         let expiry: u64 = 10000000000000;
         let is_call = true;
-        create_contract<ManagedCoin>(admin, str::utf8(b"test"), size, strike, expiry, is_call);
+        let id = OptionId<ManagedCoin> {
+            price_feed,
+            size,
+            strike,
+            expiry,
+            call: is_call
+        };
+        create_contract<ManagedCoin>(admin, price_feed, size, strike, expiry, is_call);
 
-        let contract = vector::borrow(&borrow_global<OptionsContractStore<ManagedCoin>>(address_of(admin)).options, 0);
+        let _contract = table::borrow(&borrow_global<OptionsContractStore<ManagedCoin>>(address_of(admin)).options, id);
         
     }
 }
