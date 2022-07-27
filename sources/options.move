@@ -3,21 +3,19 @@ module Options::options {
     use std::option::{Self, Option};
     use std::signer::{address_of};
     use std::vector::{Self};
-    use aptos_framework::coin::{Coin};
+    use aptos_framework::coin::{Self, Coin};
 
     const USDC_DECIMALS: u64 = 6;
 
     const ENOT_ADMIN: u64 = 1000;
 
+    const EOPTION_NOT_FOUND: u64 = 2000;
+
     struct OptionsContractStore<phantom CoinType> has key {
         options: vector<OptionsContract<CoinType>>,
     }
 
-    // Each user can only have 1 OptionsContract object at a time. 
-    // Account -> (object type = store) -> data
-
-    struct OptionsContract<phantom CoinType> has store {
-        collateral: Option<Coin<CoinType>>,
+    struct OptionId<phantom T> has copy, drop, store {
         // Price feed name
         price_feed: String,
         // Native amount of the underlying per contract
@@ -27,7 +25,28 @@ module Options::options {
         // Expiry unix timestamp
         expiry: u64,
         // Whether the option is a call or put
-        call: bool,
+        call: bool
+    }
+
+    // each user has one of these per asset type (eg btc, eth)
+    // struct UserOptionsStore<phantom T> has key {
+    //     longs: Table<u64, Long>,
+    //     short: Table<u64, Long>
+    // }
+
+    // struct Long<T> has store {
+    //     id: <some way to reference the original contract>,
+    //     size: <some way to indicate size of position>
+    // }
+
+    // struct Short<T> has store {
+    //     id: <some way to reference the original contract>,
+    //     size: <some way to indicate size of position>
+    // }
+
+    struct OptionsContract<phantom T> has store {
+        id: OptionId<T>,
+        collateral: Option<Coin<T>>,
         // Value per contract at expiry, denominated in native collateral quantity
         value: Option<u64>,
     }
@@ -41,14 +60,17 @@ module Options::options {
         call: bool
     ) acquires OptionsContractStore {
         assert!(address_of(creator) == @Options, ENOT_ADMIN);
-        let contract = OptionsContract<CoinType> {
-            collateral: option::none(),
+        let id = OptionId<CoinType> {
             price_feed,
             size,
             strike,
             expiry,
             call,
-            value: option::none(), 
+        };
+        let contract = OptionsContract<CoinType> {
+            id,
+            collateral: option::none(),
+            value: option::none(),
         };
 
         if (exists<OptionsContractStore<CoinType>>(address_of(creator))) {
@@ -62,25 +84,36 @@ module Options::options {
         }
     }
 
-    // public entry fun mint<C>(contract: OptionsContract<C>, collateral: Coin<C>) {
-    //     // let options = &mut borrow_global_mut<OptionsContractStore<C>>(address_of(@Options)).options;
-    //     // scan for match, then write  if we find one. 
+    public entry fun mint<C>(contract: &mut OptionsContract<C>, collateral: Coin<C>) {
+        let num_tokens = aptos_framework::coin::value<C>(&collateral) / contract.id.size;
+        if (option::is_none(&contract.collateral)) {
+            option::fill(&mut contract.collateral, collateral);
+        } else {
+            let coins = option::borrow_mut(&mut contract.collateral);
+            coin::merge(coins, collateral);
+        }
+        // merge the coin
+        // issue a corresponding long/short tokens
 
-    //     let num_tokens = aptos_framework::coin::value<C>(&collateral) / contract.size;
-    //     if (option::is_none(&contract.collateral)) {
-    //         option::fill(&mut contract.collateral, collateral);
-    //     } else {
-    //         let coins = option::borrow_mut(&mut contract.collateral);
-    //         coin::merge(coins, collateral);
-    //     }
-    //     // merge the coin
-    //     // issue a corresponding long/short tokens
+    }
 
-    // }
-
-    // public entry fun get_contracts<C>(user: address): vector<OptionsContract<C>> acquires OptionsContractStore {
-    //     let value = borrow_global<OptionsContractStore<C>>(user).options;
-    //     value
+    // public entry fun get_contract<C>(
+    //     user: address,
+    //     size: u64,
+    //     strike: u64,
+    //     expiry: u64,
+    //     call: bool
+    // ): &OptionsContract<C> acquires OptionsContractStore {
+    //     let options = &borrow_global<OptionsContractStore<C>>(user).options;
+    //     let i = 0;
+    //     while (i < vector::length(options)) {
+    //         let option = vector::borrow(options, i);
+    //         if (option.size == size && option.strike == strike && option.expiry == expiry && option.call == call) {
+    //             return option
+    //         };
+    //         i = i + 1;
+    //     };
+    //     abort EOPTION_NOT_FOUND
     // }
 
     struct ManagedCoin {}
@@ -102,6 +135,13 @@ module Options::options {
 
     #[test(admin = @Options)]
     fun test_mint(admin: &signer) acquires OptionsContractStore {
-        create_contract<ManagedCoin>(admin, str::utf8(b"test"), 1000, 1000, 10000000000000, true);
+        let size: u64 = 1000;
+        let strike: u64 = 1000;
+        let expiry: u64 = 10000000000000;
+        let is_call = true;
+        create_contract<ManagedCoin>(admin, str::utf8(b"test"), size, strike, expiry, is_call);
+
+        let contract = vector::borrow(&borrow_global<OptionsContractStore<ManagedCoin>>(address_of(admin)).options, 0);
+        
     }
 }
