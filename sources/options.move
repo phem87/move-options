@@ -1,3 +1,5 @@
+// TODO: enforce that strike is usdc
+
 module Options::options {
     use std::string::{Self as str, String};
     use std::option::{Self, Option};
@@ -14,6 +16,7 @@ module Options::options {
     const EUSER_STORE_EXISTS: u64= 2001;
 
     const EOPTION_NOT_FOUND: u64 = 3000;
+    const EINVALID_BURN: u64 = 3001;
 
     struct OptionsContractStore<phantom CoinType> has key {
         options: Table<OptionId<CoinType>, OptionsContract<CoinType>>,
@@ -32,6 +35,13 @@ module Options::options {
         call: bool
     }
 
+    struct OptionsContract<phantom T> has store {
+        id: OptionId<T>, // TODO: maybe dont need this
+        collateral: Option<Coin<T>>,
+        // Value per contract at expiry, denominated in native collateral quantity
+        value: Option<u64>,
+    }
+
     // each user has one of these per underlying asset type (eg btc, eth, usdc)
     struct UserOptionsStore<phantom T> has key {
         longs: vector<Long<T>>,
@@ -48,15 +58,6 @@ module Options::options {
         id: OptionId<T>,
         // number of options
         quantity: u64,
-    }
-
-    // public entry fun merge
-
-    struct OptionsContract<phantom T> has store {
-        id: OptionId<T>, // TODO: maybe dont need this
-        collateral: Option<Coin<T>>,
-        // Value per contract at expiry, denominated in native collateral quantity
-        value: Option<u64>,
     }
 
     public entry fun init_user_store<T>(user: &signer) {
@@ -138,37 +139,85 @@ module Options::options {
         add_to_user_store(writer, long, short);
     }
 
-    // public entry fun get_contract<C>(
-    //     user: address,
-    //     size: u64,
-    //     strike: u64,
-    //     expiry: u64,
-    //     call: bool
-    // ): &OptionsContract<C> acquires OptionsContractStore {
-    //     let options = &borrow_global<OptionsContractStore<C>>(user).options;
-    //     let i = 0;
-    //     while (i < vector::length(options)) {
-    //         let option = vector::borrow(options, i);
-    //         if (option.size == size && option.strike == strike && option.expiry == expiry && option.call == call) {
-    //             return option
-    //         };
-    //         i = i + 1;
-    //     };
-    //     abort EOPTION_NOT_FOUND
-    // }
+    // public fun ids_equal<C>
 
+    /// 
+    public entry fun burn<C>(
+        _user: &signer,
+        contract: &mut OptionsContract<C>,
+        long_token: Long<C>,
+        short_token: Short<C>
+    ): Coin<C> {
+        // unpack to destroy
+        let Long<C> { id: long_id, quantity: long_quantity } = long_token;
+        let Short<C> { id: short_id, quantity: short_quantity } = short_token;
+
+        assert!(long_id == contract.id, EINVALID_BURN);
+        assert!(long_id == short_id, EINVALID_BURN);
+        assert!(long_quantity == short_quantity, EINVALID_BURN);
+
+        // amount of underlying
+        let redemption_quantity = contract.id.size * long_quantity;
+        coin::extract(option::borrow_mut(&mut contract.collateral), redemption_quantity)
+        // send redemption_quantity of the underlying back to the user
+        // burn the long and the short
+    }
+
+    // No oracle yet so will just have admin set a price
+    public entry fun settle<C>(
+        admin: &signer,
+        contract: &mut OptionsContract<C>,
+        _price: u64
+    ) {
+        assert!(address_of(admin) == @Options, ENOT_ADMIN);
+        contract.value = option::some(0);
+    }
+
+    public entry fun exercise<C>(
+        _user: &signer,
+        contract: &mut OptionsContract<C>,
+        long: Long<C>,
+    ) {
+       let value = *option::borrow(&contract.value);
+       let Long<C> { id: long_id, quantity: long_quantity } = long;
+       assert!(long_id == contract.id, EINVALID_BURN); 
+       let _exercise_value = value * long_quantity; 
+       // send that underlying back if > 0
+    }
+
+    public entry fun redeem<C>(
+        _user: &signer,
+        contract: &mut OptionsContract<C>,
+        short: Short<C>,
+    ) {
+        let value = *option::borrow(&contract.value);
+        let Short<C> { id: short_id, quantity: short_quantity } = short;
+        assert!(short_id == contract.id, EINVALID_BURN); 
+        let _redemption_value = if (value > 0) {
+            (contract.id.size - value) * short_quantity
+        } else {
+            0
+        };
+       // send that underlying back if > 0
+    }
+    
+    #[test_only]
     struct ManagedCoin {}
+    #[test_only]
     struct WrappedBTCCoin {}
 
+    #[test_only]
     struct Caps<phantom T> {
         m: coin::MintCapability<T>,
         b: coin::BurnCapability<T>,
     }
 
+    #[test_only]
     struct Fixture {
         managed_caps: Caps<ManagedCoin>,
     }
 
+    #[test_only]
     fun setup(account: &signer): Fixture {
         let name = str::utf8(b"MNG");
         let (m, b) = coin::initialize<ManagedCoin>(account, name, name, 3, true);
@@ -178,12 +227,14 @@ module Options::options {
         }
     }
 
+    #[test_only]
     fun destroy_caps<T>(c: Caps<T>) {
         let Caps { m, b } = c;
         coin::destroy_mint_cap<T>(m);
         coin::destroy_burn_cap<T>(b);
     }
 
+    #[test_only]
     fun teardown(fix: Fixture) {
         let Fixture { managed_caps } = fix;
         destroy_caps(managed_caps);
@@ -226,4 +277,47 @@ module Options::options {
         mint<ManagedCoin>(writer, contract, managed_coin);
         teardown(fix);
     }
+
+    #[test(admin = @Options, writer = @0x0fac75)]
+    fun test_burn(admin: &signer, writer: &signer) acquires OptionsContractStore, UserOptionsStore {
+        let fix = setup(admin);
+        let price_feed = str::utf8(b"test");
+        let size: u64 = 1000;
+        let strike: u64 = 5000000;
+        let expiry: u64 = 10000000000000;
+        let is_call = true;
+        let id = OptionId<ManagedCoin> {
+            price_feed,
+            size,
+            strike,
+            expiry,
+            call: is_call
+        };
+        create_contract<ManagedCoin>(admin, price_feed, size, strike, expiry, is_call);
+
+        let managed_coin = coin::mint<ManagedCoin>(size, &fix.managed_caps.m);
+        let host_store = &mut borrow_global_mut<OptionsContractStore<ManagedCoin>>(address_of(admin)).options;
+        let contract = table::borrow_mut<OptionId<ManagedCoin>, OptionsContract<ManagedCoin>>(host_store, id);
+        mint<ManagedCoin>(writer, contract, managed_coin);
+
+        let user_options_store = borrow_global_mut<UserOptionsStore<ManagedCoin>>(address_of(writer));
+        let long = vector::remove(&mut user_options_store.longs, 0);
+        let short = vector::remove(&mut user_options_store.shorts, 0);
+
+        let collateral = burn(writer, contract, long, short);
+        assert!(coin::value(&collateral) == size, 6);
+        coin::burn(collateral, &fix.managed_caps.b);
+        teardown(fix);
+    }
+
+    // #[test(admin = @Options, writer = @0x0fac75)]
+    // fun test_exercise(admin: &signer, writer: &signer) acquires OptionsContractStore, UserOptionsStore {
+
+    // }
+
+    // #[test(admin = @Options, writer = @0x0fac75)]
+    // fun test_redeem(admin: &signer, writer: &signer) acquires OptionsContractStore, UserOptionsStore {
+
+    // }
+
 }
