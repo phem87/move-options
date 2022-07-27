@@ -10,7 +10,8 @@ module Options::options {
 
     const ENOT_ADMIN: u64 = 1000;
 
-    const EUSER_STORE_EXISTS: u64 = 2000;
+    const EADMIN_STORE_EXISTS: u64= 2000;
+    const EUSER_STORE_EXISTS: u64= 2001;
 
     const EOPTION_NOT_FOUND: u64 = 3000;
 
@@ -109,10 +110,11 @@ module Options::options {
     }
 
     public entry fun mint<C>(
+        writer: &signer,
         contract: &mut OptionsContract<C>,
         collateral: Coin<C>
-    ): (Long<C>, Short<C>) {
-        // TODO: assert
+    ) acquires UserOptionsStore {
+        // TODO: assert that it divides evenly
         let num_tokens = aptos_framework::coin::value<C>(&collateral) / contract.id.size;
         if (option::is_none(&contract.collateral)) {
             option::fill(&mut contract.collateral, collateral);
@@ -130,7 +132,10 @@ module Options::options {
             id: contract.id,
             quantity: num_tokens,
         };
-        (long, short)
+        if (!exists<UserOptionsStore<C>>(address_of(writer))) {
+            init_user_store<C>(writer);
+        };
+        add_to_user_store(writer, long, short);
     }
 
     // public entry fun get_contract<C>(
@@ -154,6 +159,35 @@ module Options::options {
 
     struct ManagedCoin {}
     struct WrappedBTCCoin {}
+
+    struct Caps<phantom T> {
+        m: coin::MintCapability<T>,
+        b: coin::BurnCapability<T>,
+    }
+
+    struct Fixture {
+        managed_caps: Caps<ManagedCoin>,
+    }
+
+    fun setup(account: &signer): Fixture {
+        let name = str::utf8(b"MNG");
+        let (m, b) = coin::initialize<ManagedCoin>(account, name, name, 3, true);
+        let managed_caps = Caps { m, b };
+        Fixture {
+            managed_caps,
+        }
+    }
+
+    fun destroy_caps<T>(c: Caps<T>) {
+        let Caps { m, b } = c;
+        coin::destroy_mint_cap<T>(m);
+        coin::destroy_burn_cap<T>(b);
+    }
+
+    fun teardown(fix: Fixture) {
+        let Fixture { managed_caps } = fix;
+        destroy_caps(managed_caps);
+    }
     
     #[test(admin = @Options)]
     fun test_contract(admin: &signer) acquires OptionsContractStore {
@@ -169,11 +203,12 @@ module Options::options {
         assert!(table::length<OptionId<WrappedBTCCoin>, OptionsContract<WrappedBTCCoin>>(btc_store) == 1, 1000);
     }
 
-    #[test(admin = @Options)]
-    fun test_mint(admin: &signer) acquires OptionsContractStore {
+    #[test(admin = @Options, writer = @0x0fac75)]
+    fun test_mint(admin: &signer, writer: &signer) acquires OptionsContractStore, UserOptionsStore {
+        let fix = setup(admin);
         let price_feed = str::utf8(b"test");
         let size: u64 = 1000;
-        let strike: u64 = 1000;
+        let strike: u64 = 5000000;
         let expiry: u64 = 10000000000000;
         let is_call = true;
         let id = OptionId<ManagedCoin> {
@@ -185,7 +220,10 @@ module Options::options {
         };
         create_contract<ManagedCoin>(admin, price_feed, size, strike, expiry, is_call);
 
-        let _contract = table::borrow(&borrow_global<OptionsContractStore<ManagedCoin>>(address_of(admin)).options, id);
-        
+        let managed_coin = coin::mint<ManagedCoin>(size, &fix.managed_caps.m);
+        let host_store = &mut borrow_global_mut<OptionsContractStore<ManagedCoin>>(address_of(admin)).options;
+        let contract = table::borrow_mut<OptionId<ManagedCoin>, OptionsContract<ManagedCoin>>(host_store, id);
+        mint<ManagedCoin>(writer, contract, managed_coin);
+        teardown(fix);
     }
 }
